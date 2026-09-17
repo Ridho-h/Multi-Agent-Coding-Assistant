@@ -7,31 +7,49 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# Docker image with pytest pre-installed (built via: docker build -t code-sandbox:latest ./mcp_sandbox)
+# Docker image with pytest pre-installed (build via: docker build -t code-sandbox:latest ./mcp_sandbox)
 SANDBOX_IMAGE = "code-sandbox:latest"
 
 
-def run_in_docker(code: str, test_code: str, timeout: int = 30) -> Dict[str, Any]:
+def run_in_docker(
+    files: Dict[str, str],
+    test_file: str = "test_solution.py",
+    timeout: int = 30,
+) -> Dict[str, Any]:
     """
-    Execute solution code and tests inside an isolated Docker container.
+    Write all files to a temp directory and run pytest inside an isolated Docker container.
 
     The container runs with:
       - --network none  (no internet access for generated code)
       - --memory 128m   (prevents memory exhaustion)
       - --cpus 0.5      (prevents CPU exhaustion)
 
+    Subdirectories are created automatically (e.g. 'calculator/core.py' → creates calculator/).
+
     Args:
-        code: The Python solution code.
-        test_code: The Pytest test script (imports from solution.py).
+        files: Dict of relative filename → source code.
+               Must include the test file under the key matching test_file.
+        test_file: Relative path of the pytest script within files.
         timeout: Max seconds before the container is killed.
 
     Returns:
-        Dict with keys: passed (bool), failed (bool), stdout (str), stderr (str), error (str | None).
+        Dict with keys: passed (bool), stdout (str), stderr (str), error (str | None).
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        (tmp_path / "solution.py").write_text(code, encoding="utf-8")
-        (tmp_path / "test_solution.py").write_text(test_code, encoding="utf-8")
+
+        for filename, content in files.items():
+            dest = tmp_path / filename
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+
+            # Create __init__.py for any new package directories
+            for parent in dest.parents:
+                if parent == tmp_path:
+                    break
+                init = parent / "__init__.py"
+                if not init.exists():
+                    init.touch()
 
         docker_cmd = [
             "docker", "run", "--rm",
@@ -41,7 +59,7 @@ def run_in_docker(code: str, test_code: str, timeout: int = 30) -> Dict[str, Any
             "-v", f"{tmp_path.absolute()}:/code",
             "-w", "/code",
             SANDBOX_IMAGE,
-            "python", "-m", "pytest", "test_solution.py", "-v",
+            "python", "-m", "pytest", test_file, "-v",
         ]
 
         logger.debug("Sandbox command: %s", " ".join(docker_cmd))
@@ -56,7 +74,6 @@ def run_in_docker(code: str, test_code: str, timeout: int = 30) -> Dict[str, Any
             passed = result.returncode == 0
             return {
                 "passed": passed,
-                "failed": not passed,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "error": None,
@@ -65,7 +82,6 @@ def run_in_docker(code: str, test_code: str, timeout: int = 30) -> Dict[str, Any
         except subprocess.TimeoutExpired:
             return {
                 "passed": False,
-                "failed": True,
                 "stdout": "",
                 "stderr": f"Execution timed out after {timeout} seconds.",
                 "error": "TimeoutExpired",
@@ -73,7 +89,6 @@ def run_in_docker(code: str, test_code: str, timeout: int = 30) -> Dict[str, Any
         except Exception as exc:
             return {
                 "passed": False,
-                "failed": True,
                 "stdout": "",
                 "stderr": str(exc),
                 "error": type(exc).__name__,
