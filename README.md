@@ -1,6 +1,6 @@
 # Multi-Agent Coding Assistant
 
-A multi-agent AI pipeline that takes a plain-English coding specification and produces **working, tested Python code** through a collaborative loop of four agents backed by a secure Docker sandbox exposed via the **Model Context Protocol (MCP)**.
+A multi-agent AI pipeline that takes a plain-English coding specification and produces **working, tested Python code** — either as a single file or a full multi-file package — through a collaborative loop of four agents backed by a secure Docker sandbox exposed via the **Model Context Protocol (MCP)**.
 
 ## Architecture
 
@@ -72,10 +72,18 @@ This bakes `pytest` into the image so tests run with `--network none` (no intern
 
 ## Usage
 
-### Interactive Demo
+### Single-File Generation
+Simple specs produce a single `solution.py`:
 ```powershell
 python -m demo.run_demo --spec "Write a function that checks if a string is a palindrome."
 ```
+
+### Multi-File Package Generation
+Complex specs automatically produce a full package structure:
+```powershell
+python -m demo.run_demo --spec "Create a calculator package with separate files for basic operations (add, subtract, multiply, divide) and a utils file for input validation."
+```
+The Planner automatically decides whether to produce a single file or a multi-file package based on the spec. No flag needed.
 
 ### Run the Full Evaluation Suite (20 tasks)
 ```powershell
@@ -137,9 +145,9 @@ Tested against 20 coding tasks of increasing difficulty (Easy × 5, Medium × 8,
 │
 ├── agents/
 │   ├── base.py           # Gemini LLM wrapper with retry/backoff
-│   ├── planner.py        # Breaks spec into JSON plan
-│   ├── coder.py          # Writes code from plan + feedback
-│   ├── reviewer.py       # Reviews code against spec & plan
+│   ├── planner.py        # Breaks spec into Plan (with FileSpec module layout)
+│   ├── coder.py          # Writes Dict[filename→code] from plan + feedback
+│   ├── reviewer.py       # Reviews all files against spec & plan
 │   └── tester.py         # Writes tests, calls MCP sandbox
 │
 ├── orchestrator/

@@ -2,6 +2,7 @@ import json
 import asyncio
 import os
 import sys
+from typing import Dict
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -11,6 +12,9 @@ from mcp.client.stdio import stdio_client
 from agents.base import call_llm
 from agents.planner import Plan
 
+# The test file is always written under this key in the files dict
+TEST_FILE = "test_solution.py"
+
 
 class TestResult(BaseModel):
     passed: bool
@@ -19,37 +23,45 @@ class TestResult(BaseModel):
     error: str | None = None
 
 
-class TestCodeResponse(BaseModel):
+class _TestCodeResponse(BaseModel):
     test_code: str = Field(description="The complete Pytest script.")
 
 
 TESTER_SYSTEM_PROMPT = """
 You are the Tester agent in a multi-agent coding team.
-Your job is to read the target Python code and test hints, then write a complete, runnable Pytest script.
-The test script must import from a file named `solution.py` in the same directory.
-Write ONLY the Python code for the test — no markdown, no explanations.
+Your job is to write a complete, runnable Pytest script that tests the provided solution code.
+
+Rules:
+- Import from the entry module specified (e.g. `from solution import foo` or `from calculator.core import add`).
+- Write ONLY the Python test code — no markdown, no explanations.
+- Cover the normal cases, edge cases, and error cases described in the test hints.
 """
 
 
-def generate_test_code(code: str, plan: Plan) -> str:
-    """Generate a Pytest script for the given solution code."""
-    user_prompt = (
-        f"Target Code (`solution.py`):\n<code>\n{code}\n</code>\n\n"
-        f"Test Hints:\n{plan.test_hints}\n\n"
-        f"Write the pytest script importing from `solution` and testing thoroughly."
+def _generate_test_code(files: Dict[str, str], plan: Plan) -> str:
+    """Generate a Pytest script for the given file map."""
+    files_str = "\n\n".join(
+        f"# === {fname} ===\n{src}" for fname, src in files.items()
     )
 
-    response: TestCodeResponse = call_llm(
+    user_prompt = (
+        f"Solution Files:\n<code>\n{files_str}\n</code>\n\n"
+        f"Entry Module to import from: `{plan.entry_module}`\n\n"
+        f"Test Hints:\n{plan.test_hints}\n\n"
+        f"Write the complete pytest script. "
+        f"Import from `{plan.entry_module}` (not from 'solution' unless that IS the entry module)."
+    )
+
+    response: _TestCodeResponse = call_llm(
         system_prompt=TESTER_SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        response_schema=TestCodeResponse,
+        response_schema=_TestCodeResponse,
     )
     return response.test_code
 
 
-async def _run_mcp_sandbox(code: str, test_code: str) -> TestResult:
-    """Connect to the MCP sandbox server via stdio and execute the code."""
-    # Inject project root into PYTHONPATH so the subprocess finds mcp_sandbox
+async def _run_mcp_sandbox(files: Dict[str, str], test_file: str) -> TestResult:
+    """Connect to the MCP sandbox server via stdio and execute the files."""
     project_root = str(Path(__file__).parent.parent)
     env = os.environ.copy()
     env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
@@ -64,7 +76,8 @@ async def _run_mcp_sandbox(code: str, test_code: str) -> TestResult:
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(
-                "run_code", arguments={"code": code, "test_code": test_code}
+                "run_code",
+                arguments={"files": files, "test_file": test_file},
             )
             data = json.loads(result.content[0].text)
             return TestResult(
@@ -75,16 +88,17 @@ async def _run_mcp_sandbox(code: str, test_code: str) -> TestResult:
             )
 
 
-def run_tests(code: str, plan: Plan) -> TestResult:
+def run_tests(files: Dict[str, str], plan: Plan) -> TestResult:
     """
-    Generate tests for the given code and run them in the Docker MCP sandbox.
+    Generate tests for the given file map and run them in the Docker MCP sandbox.
 
     Args:
-        code: The solution code to test.
-        plan: The Plan (used for test_hints).
+        files: Dict of filename → source code (the solution files).
+        plan: The Plan (used for entry_module and test_hints).
 
     Returns:
         TestResult with pass/fail status and output.
     """
-    test_code = generate_test_code(code, plan)
-    return asyncio.run(_run_mcp_sandbox(code, test_code))
+    test_code = _generate_test_code(files, plan)
+    all_files = {**files, TEST_FILE: test_code}
+    return asyncio.run(_run_mcp_sandbox(all_files, TEST_FILE))

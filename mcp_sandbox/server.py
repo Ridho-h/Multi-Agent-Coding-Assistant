@@ -1,29 +1,33 @@
+import json
 import logging
+from typing import Dict
+
 from mcp.server.mcpserver import MCPServer
 from mcp_sandbox.executor import run_in_docker
-import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create the MCPServer (MCP 2.x replaces FastMCP)
 mcp = MCPServer("code_sandbox")
 
+
 @mcp.tool()
-def run_code(code: str, test_code: str) -> str:
+def run_code(files: Dict[str, str], test_file: str = "test_solution.py") -> str:
     """
-    Executes Python code along with a test script in an isolated Docker sandbox.
+    Execute a set of Python files in an isolated Docker sandbox and run pytest.
 
     Args:
-        code: The Python solution code to be tested.
-        test_code: The pytest script to test the solution. It should import the solution.
+        files: Dict mapping relative filename → Python source code.
+               Must include the test script under the key matching test_file.
+        test_file: Relative path of the pytest script within files.
 
     Returns:
-        A JSON string containing the test results: passed, failed, stdout, stderr, and error.
+        JSON string with keys: passed, stdout, stderr, error.
     """
-    logger.info("Received run_code request")
-    result = run_in_docker(code, test_code)
+    logger.info("Received run_code request (%d file(s), test=%s)", len(files), test_file)
+    result = run_in_docker(files=files, test_file=test_file)
     return json.dumps(result, indent=2)
+
 
 if __name__ == "__main__":
     logger.info("Starting Code Sandbox MCP Server (stdio)")
